@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # Inicializa o cliente OpenAI utilizando a chave de API carregada
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-modelo = "gpt-4"
+modelo = "gpt-4o-mini"
 
 #Define as personalidades do chatbot
 personas = {
