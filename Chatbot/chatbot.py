@@ -1,136 +1,94 @@
-
-import PyPDF2
 from openai import OpenAI
-from flask import Flask, request
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 import os
+import requests
 
-# Carrega as variáveis de ambiente, como a chave da API do OpenAI, do arquivo .env
+# Carregar variáveis de ambiente
 load_dotenv()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+whatsapp_token = os.getenv("WHATSAPP_TOKEN")
+whatsapp_phone_id = os.getenv("NUMBER_ID")
+VERIFY_TOKEN = "my_verify_token"
 
 app = Flask(__name__)
 
-# Inicializa o cliente OpenAI utilizando a chave de API carregada
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-modelo = "gpt-4o-mini"
+# Dicionário para armazenar o histórico de mensagens por número de telefone
+historicos = {}
 
-#Define as personalidades do chatbot
-personas = {
-        'positivo': """
-                    Assuma que você é um grande entusiasta de aprendizado de linguagem e fã de harry potter, você adora falar sobre os esses assuntos de forma feliz e positiva, adora usar palavras positivas e elogiar o usuário pelas perguntas sobre os assuntos.
-        """,
-        'neutro': """
-                    Assuma que você é um chat pragmático e direto ao ponto, você responde com objetividade e clareza as perguntas, sem fugir do assunto e da pergunta feita, seja neutro e parcial em suas respostas.
-        """,
-        'negativo': """
-                    Assuma que você é um solucionador compassivo, conhecido pela empatia, paciência e capacidade de entender as preocupações dos usuários. Você usa uma linguagem calorosa e acolhedora e não hesita em expressar apoio emocional através das palavras, caso o usuário utilize palavras negativas como: não gostei, não estou satisfeito ou coisas relacionadas, apenas tente confortá-lo e informar que vai melhorar para próxima pergunta.
-        """
-}
-
-# Função para selecionar a persona com base na análise do sentimento da mensagem
-def selecionar_persona(mensagem_usuario):
-        prompt_sistema = """
-            Faça uma análise da mensagem informada abaixo para identificar se o sentimento é: positivo, neutro ou negativo.
-            Retorne apenas um dos três tipos de sentimentos informados como resposta.
-        """
-        response = client.chat.completions.create(
-            model=modelo,
-            messages=[
-                {
-                  "role": "system",
-                  "content": prompt_sistema
-                },
-
-                {
-                  "role": "user",
-                  "content": mensagem_usuario
-                }
-            ],
-            temperature=1
-        )
-        return response.choices[0].message.content.lower().strip()
-
-
-# Função que lê o conteúdo de um arquivo PDF e retorna o texto extraído
-def conteudo(lista_caminhos_pdf): 
-    textos = ""  # Inicializa uma string vazia para armazenar o texto extraíando
-    for caminho_pdf in lista_caminhos_pdf:
-     with open(caminho_pdf, 'rb') as file:  # Abre o arquivo PDF em modo de leitura binária
-        reader = PyPDF2.PdfReader(file)  # Cria um leitor de PDF
-        # Itera por cada página do PDF e extrai o texto
-        for page in reader.pages:
-            textos += page.extract_text()  
-    return textos  # Retorna o texto completo extraído do PDF
-
-# Função principal para gerar a resposta do chat usando a API do OpenAI
+# Função que interage com o modelo OpenAI para gerar respostas
 def funcao(historico):
-    # Faz uma chamada para o modelo de chat da OpenAI, enviando o histórico de mensagens
     completion = client.chat.completions.create(
-        model="gpt-4o-mini",  # Modelo utilizado para geração de respostas
-        messages=historico,  # O histórico de conversas é enviado ao modelo
-        temperature=0,  # Define a temperatura (criatividade) das respostas
-        max_tokens=200  # Limita a resposta a 200 tokens
+        model="gpt-4o-mini",
+        messages=historico,
+        temperature=0,
+        max_tokens=200
     )
-    
-    # Retorna o conteúdo da primeira escolha de resposta gerada pelo modelo
     return completion.choices[0].message.content
 
-# Função principal do chatbot
-def chatbot():
-    # Lê o conteúdo do PDF especificado e armazena na variável textos_pdf
-    lista_caminhos_pdf = [
-                "./arquivos/textoHP.pdf",
-                "./arquivos/aprendizado.pdf"
-                
-     ]
-
-    textos_pdf = conteudo(lista_caminhos_pdf)
-
-
-    # Define o contexto do chatbot: ele só pode responder perguntas com base no conteúdo do PDF
-    historico = [
-        {
-            "role": "system", 
-            "content": f"Você é um chatbot que passa informações rápidas e objetivas, porém somente sobre o conteúdo retirado deste documento: {textos_pdf}. "
-                       "Caso sejam feitas perguntas que fujam do assunto retirado do documento, apenas responda: "
-                       "'Infelizmente não posso responder a sua dúvida, tiro dúvidas somente sobre Harry Potter'."
-                       "Sempre seja objetivo nas suas respostas, tentando utilizar o menor número de caracteres sem afetar a construção da resposta."
-                       "Lembre-se que perguntas do cotidiano devem ser respondidas, como por exemplo: oi, tudo bem, tchau e coisas relacionadas, sempre visando a boa educação e cordialidade com o usuário"
-                       
+# Função para enviar mensagens via API do WhatsApp
+def send_whatsapp_message(phone_number, message):
+    url = f"https://graph.facebook.com/v13.0/{whatsapp_phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {whatsapp_token}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "messaging_product": "whatsapp",
+        "to": phone_number,
+        "type": "text",
+        "text": {
+            "body": message
         }
-    ]
+    }
+    response = requests.post(url, headers=headers, json=data)
+    return response.json()
 
-    opcoes_de_sair = ['sair', 'Sair', 'encerrar', 'parar']
+# Webhook para receber mensagens do WhatsApp e responder
+@app.route('/webhook', methods=["GET", "POST"])
+def webhook():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
 
-    # Loop para manter o chat rodando até o usuário digitar 'sair'
-    while True:
-        # Solicita uma pergunta do usuário
-        faca_pergunta = input("Olá, respondo perguntas sobre o assunto Harry Potter, caso queira encerrar digite 'sair': ")
-        
-        # Se o usuário digitar 'sair', o loop é encerrado
-        if faca_pergunta.lower() in opcoes_de_sair:
-            print("Espero ter ajudado, até a próxima :)")
-            break
+        if mode and token:
+            if mode == "subscribe" and token == VERIFY_TOKEN:
+                return challenge, 200
+            else:
+                return "Forbidden", 403
 
-        # Selecionar a persona com base no sentimento da pergunta do usuário
-        sentimento = selecionar_persona(faca_pergunta)
-        persona_escolhida = personas.get(sentimento, personas['neutro']) # Usar 'neutro' como padrão se o sentimento não for detectado
+    if request.method == "POST":
+        data = request.get_json()
+        if data["object"] == "whatsapp_business_account":
+            for entry in data["entry"]:
+                for change in entry["changes"]:
+                    if "messages" in change["value"]:
+                        for message in change["value"]["messages"]:
+                            if message["type"] == "text":
+                                phone_number = message["from"]
+                                text = message["text"]["body"]
 
-        # Adicionar a persona ao contexto do sistema
-        historico.append({"role": "system", "content": persona_escolhida})
-        
-        # Adiciona a pergunta do usuário ao histórico
-        historico.append({"role": "user", "content": faca_pergunta})
+                                # Iniciar histórico de conversa para o número, se não existir
+                                if phone_number not in historicos:
+                                    historicos[phone_number] = [
+                                        {"role": "system", "content": "Você é um bot arrogante, que sempre trata mal os usuários"}
+                                    ]
+                                
+                                # Adiciona a mensagem do usuário ao histórico
+                                historicos[phone_number].append({"role": "user", "content": text})
 
-        # Obtém a resposta do chatbot chamando a função 'funcao'
-        resposta = funcao(historico)
+                                # Gera a resposta usando o histórico completo
+                                resposta = funcao(historicos[phone_number])
 
-        # Adiciona a resposta do chatbot ao histórico
-        historico.append({"role": "system", "content": resposta})
+                                # Adiciona a resposta ao histórico
+                                historicos[phone_number].append({"role": "system", "content": resposta})
 
-        # Exibe a resposta do chatbot ao usuário
-        print(resposta)
+                                # Envia a resposta para o WhatsApp
+                                send_whatsapp_message(phone_number, resposta)
+                                
+        return jsonify({"status": "success"}), 200
 
-# Ponto de entrada do programa
 if __name__ == "__main__":
-    chatbot()
+    app.run(debug=True)
